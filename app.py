@@ -1,13 +1,55 @@
+"""
+Tasks API - Gerenciador de Tarefas REST
+Autor: Rafael Passos
+Versão: 1.0.1
+"""
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from database import init_db, get_db
-from datetime import datetime
 import sqlite3
+from datetime import datetime
+import os
+
+# ==================== CONFIGURAÇÃO ====================
 
 app = Flask(__name__)
-CORS(app)  # Permite requisições de qualquer origem
+CORS(app)
 
-# Inicializa o banco de dados
+# Configuração do banco de dados
+DATABASE = os.environ.get('DATABASE_PATH', 'tasks.db')
+
+# ==================== DATABASE ====================
+
+def get_db():
+    """Retorna conexão com banco de dados"""
+    db = sqlite3.connect(DATABASE)
+    db.row_factory = sqlite3.Row
+    return db
+
+def init_db():
+    """Inicializa o banco de dados"""
+    try:
+        db = get_db()
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT,
+                completed INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        db.commit()
+        print("✓ Database initialized successfully")
+        return True
+    except Exception as e:
+        print(f"✗ Database initialization failed: {e}")
+        return False
+    finally:
+        db.close()
+
+# Inicializa o banco na importação do módulo
 init_db()
 
 # ==================== ROTAS ====================
@@ -17,16 +59,40 @@ def home():
     """Rota principal - informações da API"""
     return jsonify({
         'message': 'Tasks API - Gerenciador de Tarefas',
-        'version': '1.0.0',
+        'version': '1.0.1',
         'author': 'Rafael Passos',
+        'status': 'running',
         'endpoints': {
+            'GET /': 'Informações da API',
+            'GET /health': 'Health check',
             'GET /tasks': 'Lista todas as tarefas',
             'GET /tasks/<id>': 'Retorna uma tarefa específica',
             'POST /tasks': 'Cria nova tarefa',
             'PUT /tasks/<id>': 'Atualiza tarefa',
             'DELETE /tasks/<id>': 'Remove tarefa'
         }
-    })
+    }), 200
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check para plataformas de deploy"""
+    try:
+        # Testa conexão com banco
+        db = get_db()
+        cursor = db.execute('SELECT COUNT(*) FROM tasks')
+        count = cursor.fetchone()[0]
+        db.close()
+        
+        return jsonify({
+            'status': 'healthy',
+            'database': 'connected',
+            'tasks_count': count
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e)
+        }), 500
 
 @app.route('/tasks', methods=['GET'])
 def get_tasks():
@@ -35,6 +101,7 @@ def get_tasks():
         db = get_db()
         cursor = db.execute('SELECT * FROM tasks ORDER BY created_at DESC')
         tasks = cursor.fetchall()
+        db.close()
         
         tasks_list = []
         for task in tasks:
@@ -66,6 +133,7 @@ def get_task(task_id):
         db = get_db()
         cursor = db.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
         task = cursor.fetchone()
+        db.close()
         
         if task is None:
             return jsonify({
@@ -98,7 +166,13 @@ def create_task():
         data = request.get_json()
         
         # Validações
-        if not data or 'title' not in data:
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'Nenhum dado fornecido'
+            }), 400
+            
+        if 'title' not in data:
             return jsonify({
                 'success': False,
                 'error': 'Campo "title" é obrigatório'
@@ -120,12 +194,12 @@ def create_task():
             (title, description)
         )
         db.commit()
-        
         task_id = cursor.lastrowid
         
         # Busca a tarefa criada
         cursor = db.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
         task = cursor.fetchone()
+        db.close()
         
         return jsonify({
             'success': True,
@@ -163,6 +237,7 @@ def update_task(task_id):
         # Verifica se tarefa existe
         cursor = db.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
         if cursor.fetchone() is None:
+            db.close()
             return jsonify({
                 'success': False,
                 'error': 'Tarefa não encontrada'
@@ -190,6 +265,7 @@ def update_task(task_id):
             params.append(1 if completed else 0)
         
         if not updates:
+            db.close()
             return jsonify({
                 'success': False,
                 'error': 'Nenhum campo válido para atualizar'
@@ -210,6 +286,7 @@ def update_task(task_id):
         # Retorna tarefa atualizada
         cursor = db.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
         task = cursor.fetchone()
+        db.close()
         
         return jsonify({
             'success': True,
@@ -239,6 +316,7 @@ def delete_task(task_id):
         # Verifica se tarefa existe
         cursor = db.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
         if cursor.fetchone() is None:
+            db.close()
             return jsonify({
                 'success': False,
                 'error': 'Tarefa não encontrada'
@@ -247,6 +325,7 @@ def delete_task(task_id):
         # Remove
         db.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
         db.commit()
+        db.close()
         
         return jsonify({
             'success': True,
@@ -259,7 +338,8 @@ def delete_task(task_id):
             'error': str(e)
         }), 500
 
-# ==================== EXECUÇÃO ====================
+# ==================== EXECUÇÃO LOCAL ====================
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
